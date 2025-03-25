@@ -81,6 +81,19 @@ function bg([scriptblock]$ScriptBlock) {
 	Start-Process -FilePath pwsh -ArgumentList "-EncodedCommand ${EncodedCommand}"
 }
 
+if (-not ('CRT' -as [type])) {
+	Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public class CRT
+{
+	[DllImport("ucrtbase.dll")]
+	public static extern int putchar(int ch);
+}
+'@
+}
+
 function sudo {
 	[CmdletBinding()]
 
@@ -151,12 +164,27 @@ function sudo {
 			$Command += $ScriptBlock
 		}
 		else {
-			$Python = (Get-Command -Name python).Source
-			$TcpRecv = (Get-Command -Name tcp-recv.py).Source
-			$TcpSend = (Get-Command -Name tcp-send.py).Source
-			$Command += "& { ${ScriptBlock} } 2>&1 | & '${Python}' '${TcpSend}' 20316"
+			$CodePage = [System.Console]::OutputEncoding.CodePage
+			$Command +=
+			"`$Encoding = [System.Text.Encoding]::GetEncoding(${CodePage})`n" +
+			"`$PipeServer = [System.IO.Pipes.NamedPipeServerStream]::new('${SudoId}', [System.IO.Pipes.PipeDirection]::Out)`n" +
+			"`$PipeServer.WaitForConnection()`n" +
+			"& { ${ScriptBlock} } 2>&1 | Out-String -Stream | ForEach-Object -Process { `$PipeServer.Write(`$Encoding.GetBytes(`$_)); `$PipeServer.WriteByte(10) }`n" +
+			"`$PipeServer.Close()"
 		}
 		$EncodedCommand = [System.Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($Command))
+
+		$Receiver = {
+			$PipeClient = [System.IO.Pipes.NamedPipeClientStream]::new('.', $SudoId, [System.IO.Pipes.PipeDirection]::In)
+			$PipeClient.Connect()
+			while ($PipeClient.IsConnected) {
+				$Byte = $PipeClient.ReadByte()
+				if ($Byte -ne -1) {
+					[void][CRT]::putchar($Byte)
+				}
+			}
+			$PipeClient.Close()
+		}
 
 		if ($AsTask) {
 			$TaskName = "Sudo_{${SudoId}}"
@@ -164,13 +192,13 @@ function sudo {
 			$Action = New-ScheduledTaskAction -Execute (Get-Command -Name pwsh).Source -Argument "-EncodedCommand ${EncodedCommand}"
 			$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries
 			Register-ScheduledTask -TaskName $TaskName -Action $Action -Settings $Settings -User $User -RunLevel Highest | Start-ScheduledTask
-			python $TcpRecv 20316
+			& $Receiver
 			Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 		}
 		else {
 			Start-Process -FilePath pwsh -ArgumentList '-EncodedCommand', $EncodedCommand -Verb RunAs -WindowStyle ($Interactive ? 'Normal' : 'Hidden') -Wait:$Interactive
 			if (-not $Interactive) {
-				python $TcpRecv 20316
+				& $Receiver
 			}
 		}
 

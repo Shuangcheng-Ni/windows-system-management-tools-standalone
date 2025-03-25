@@ -44,24 +44,24 @@ Error code: <dec>|0x<hex>|0<oct>
 ```
 PS > ec 2
 error code: 2 | 2 | 0x00000002 | 02
-generic : no such file or directory
-system  : 系统找不到指定的文件。
-NTSTATUS: STATUS_WAIT_2
+generic : "no such file or directory"
+system  : "系统找不到指定的文件。"
+NTSTATUS: "STATUS_WAIT_2\r\n"
 
 PS > ec 0xc0000005
 error code: -1073741819 | 3221225477 | 0xc0000005 | 030000000005
-generic : unknown error
-system  : unknown error
-NTSTATUS: 0xp 指令引用了 0xp 内存。该内存不能为 s。
+generic : "unknown error"
+system  : "unknown error"
+NTSTATUS: "0xp 指令引用了 0xp 内存。该内存不能为 s。\r\n"
 ```
 
 ### Build
 
-- Command: `cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE ec.cpp`
+- Command: `cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE ec.cpp /utf-8`
 - Compiler Support:
   |Compiler|Minimum Version|Required Options|
   |-|-|-|
-  |cl (MSVC)|19.41|`/EHsc /std:c++latest`|
+  |cl (MSVC)|19.43|`/EHsc /std:c++latest`|
   |g++ (MinGW)|14|`-std=c++26 -lstdc++exp`|
   |clang++ (MSVC)|17 (with MSVC toolchain)|`-std=c++26 --target=x86_64-pc-windows-msvc`|
 
@@ -159,7 +159,7 @@ Usage:
 
 ### Build
 
-- Command: `cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE privilege.cpp advapi32.lib`
+- Command: `cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE privilege.cpp advapi32.lib /utf-8`
 - Compiler Support:
   |Compiler|Minimum Version|Required Options|
   |-|-|-|
@@ -230,7 +230,7 @@ PS > resource load test.exe test.exe.manifest MANIFEST '#1' # load the resources
 
 ### Build
 
-- Command: `cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE resource.cpp`
+- Command: `cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE resource.cpp /utf-8`
 - Compiler Support:
   |Compiler|Minimum Version|Required Options|
   |-|-|-|
@@ -404,7 +404,7 @@ PS > statreg \Registry\Machine\test delete
     - With `-RunAs <User>`, the command will be run as the specified user. `<User>` can be a user name or a SID, such as `NT AUTHORITY\SYSTEM`, `SYSTEM`, `SY`, `S-1-5-18`, `NT SERVICE\TrustedInstaller`, `S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464`, etc.
     - Without `-RunAs <User>`, the command will be run as `NT AUTHORITY\SYSTEM`.
   - With `-PreserveEnvironment`, the environment variables, PowerShell variables and PowerShell functions will be preserved.
-  - Dependencies: `tcp-receive.py`, `tcp-send.py`. Make sure `python.exe`, `tcp-receive.py` and `tcp-send.py` are in `$env:Path`. These scripts are used to send/receive data between the current process and the new process.
+  - ~~Dependencies: `tcp-receive.py`, `tcp-send.py`. Make sure `python.exe`, `tcp-receive.py` and `tcp-send.py` are in `$env:Path`. These scripts are used to send/receive data between the current process and the new process.~~ Inter-process communication is reimplemented using named pipes. No dependencies are required.
 - `function New-Shortcut`: Create a shortcut for a file/url.
 - `class ArgumentToEncodingTransformationAttribute`: Convert an argument to a specified encoding.
 - `function slspp`: Beautify the output of `Select-String`.

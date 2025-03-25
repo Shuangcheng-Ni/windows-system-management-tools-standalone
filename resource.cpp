@@ -34,12 +34,11 @@ namespace stdext {
 template <class... Ts>
 inline void wprint(const ::std::wformat_string<Ts...> fmt, Ts &&...args)
 {
-	auto cp{ GetConsoleOutputCP() };
 	auto wstr{ ::std::format(fmt, ::std::forward<decltype(args)>(args)...) };
-	auto len{ WideCharToMultiByte(cp, 0, wstr.data(), static_cast<int>(wstr.length()), nullptr, 0, nullptr, nullptr) };
+	auto len{ WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.length()), nullptr, 0, nullptr, nullptr) };
 
 	::std::string str(len, '\0');
-	WideCharToMultiByte(cp, 0, wstr.data(), static_cast<int>(wstr.length()), str.data(), len, nullptr, nullptr);
+	WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.length()), str.data(), len, nullptr, nullptr);
 	::std::print("{}", str);
 }
 
@@ -56,91 +55,42 @@ inline void throw_last_error(std::string_view msg)
 	throw std::runtime_error(std::format("{}: {:#010x}", msg, GetLastError()));
 }
 
-template <class T, auto CleanUp, auto InvalidValue = T{}, bool UseCApi = true>
-	requires(std::is_trivially_copy_constructible_v<T> && std::is_trivially_copy_assignable_v<T>) &&
-			((std::invocable<decltype(CleanUp), T> && (UseCApi || noexcept(CleanUp(std::declval<T>())))) ||
-			 (std::invocable<decltype(CleanUp), T *> && (UseCApi || noexcept(CleanUp(std::declval<T *>())))))
-class Guard {
+template <class Ptr, auto CleanUp, auto InvalidPtr = Ptr{ nullptr }>
+	requires std::is_pointer_v<Ptr> && std::invocable<decltype(CleanUp), Ptr>
+class Guard : public std::unique_ptr<std::remove_pointer_t<Ptr>, void (*)(Ptr) noexcept> {
 protected:
-	inline static const T invalid_value = [] {
-		if constexpr (std::convertible_to<decltype(InvalidValue), T>)
-		{
-			return static_cast<T>(InvalidValue);
-		}
-		else
-		{
-			return reinterpret_cast<T>(InvalidValue);
-		}
-	}();
+	using SmartPtr = std::unique_ptr<std::remove_pointer_t<Ptr>, void (*)(Ptr) noexcept>;
 
-	T value{ invalid_value };
+	inline static const auto invalid_ptr{ reinterpret_cast<Ptr>(InvalidPtr) };
+
+	static void clean_up(Ptr ptr) noexcept
+	{
+		if (ptr != invalid_ptr)
+		{
+			CleanUp(ptr);
+		}
+	}
+
+	SmartPtr &get_smart_ptr() noexcept { return *this; }
 
 public:
-	Guard() noexcept = default;
-	Guard(Guard &&other) noexcept
-		: value{ std::exchange(other.value, invalid_value) } {}
-	explicit Guard(T &&v) noexcept
-		: value{ v } {}
+	Guard() noexcept
+		: SmartPtr(invalid_ptr, clean_up) {}
+	explicit Guard(Ptr ptr) noexcept
+		: SmartPtr(ptr, clean_up) {}
 
-	~Guard()
-	{
-		if (!valid())
-		{
-			return;
-		}
-		if constexpr (std::invocable<decltype(CleanUp), T>)
-		{
-			CleanUp(value);
-		}
-		else
-		{
-			CleanUp(&value);
-		}
-	}
-
-	Guard &operator=(Guard &&other) noexcept
-	{
-		if (this != std::addressof(other))
-		{
-			this->~Guard();
-			new (this) Guard(std::move(other));
-		}
-		return *this;
-	}
-	Guard &operator=(T &&v) noexcept
+	Guard &operator=(Ptr ptr) noexcept
 	{
 		this->~Guard();
-		new (this) Guard(std::move(v));
+		new (this) Guard(ptr);
 		return *this;
 	}
 
-	operator T() const noexcept { return value; }
+	operator Ptr() const noexcept { return SmartPtr::get(); }
 
-	T *operator&() noexcept { return &value; }
+	auto operator&() noexcept { return std::inout_ptr(*this); }
 
-	auto operator->() noexcept
-	{
-		if constexpr (std::is_pointer_v<T>)
-		{
-			return value;
-		}
-		else
-		{
-			return &value;
-		}
-	}
-
-	bool valid() const noexcept
-	{
-		if constexpr (std::equality_comparable<T>)
-		{
-			return value != invalid_value;
-		}
-		else
-		{
-			return std::memcmp(&value, &invalid_value, sizeof(T)) != 0;
-		}
-	}
+	bool valid() const noexcept { return SmartPtr::get() != invalid_ptr; }
 };
 
 class LibraryLoader : public Guard<HMODULE, FreeLibrary> {
@@ -160,7 +110,7 @@ public:
 		for (DWORD len{ MAX_PATH };; len *= 2)
 		{
 			name.resize(len);
-			len = GetModuleFileName(value, name.data(), len);
+			len = GetModuleFileName(*this, name.data(), len);
 			if (len != 0)
 			{
 				switch (GetLastError())
@@ -180,12 +130,12 @@ public:
 
 	bool is_data_file() const noexcept
 	{
-		return (reinterpret_cast<ULONG_PTR>(value) & 1) != 0;
+		return (reinterpret_cast<ULONG_PTR>(SmartPtr::get()) & 1) != 0;
 	}
 
 	bool is_image_mapping() const noexcept
 	{
-		return (reinterpret_cast<ULONG_PTR>(value) & 2) != 0;
+		return (reinterpret_cast<ULONG_PTR>(SmartPtr::get()) & 2) != 0;
 	}
 
 	bool is_resource() const noexcept
@@ -337,9 +287,7 @@ private:
 
 public:
 	ResourceReader(std::tstring_view path)
-		: hdl(path, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE)
-	{
-	}
+		: hdl(path, LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE) {}
 
 	ResourceReader(const ResourceReader &)			  = delete;
 	ResourceReader(ResourceReader &&)				  = delete;
@@ -373,15 +321,11 @@ public:
 				 std::string(static_cast<const char *>(res_data), SizeofResource(hdl, res_info)) };
 	}
 
-	auto get_names(auto &&type)
+	void get_names(auto &&type, std::vector<std::tstring> &names)
 	{
 		auto type_str{ make_resource(std::forward<decltype(type)>(type)) };
 
-		std::vector<std::tstring> names;
-
 		EnumResourceNames(hdl, type_str, enum_proc, reinterpret_cast<LONG_PTR>(&names));
-
-		return names;
 	}
 };
 
@@ -476,7 +420,7 @@ void res_list(int argc, TCHAR **argv)
 		std::vector<std::tstring> res_names;
 		if (argv[i + 1] == TEXT("#all"sv))
 		{
-			res_names = reader.get_names(res_type);
+			reader.get_names(res_type, res_names);
 		}
 		else
 		{
@@ -507,7 +451,7 @@ void res_update(int argc, TCHAR **argv)
 		std::vector<std::tstring> res_names;
 		if (argv[i + 1] == TEXT("#all"sv))
 		{
-			res_names = reader.get_names(res_type);
+			reader.get_names(res_type, res_names);
 		}
 		else
 		{
@@ -539,7 +483,7 @@ void res_delete(int argc, TCHAR **argv)
 		std::vector<std::tstring> res_names;
 		if (argv[i + 1] == TEXT("#all"sv))
 		{
-			res_names = ResourceReader(argv[2]).get_names(res_type);
+			ResourceReader(argv[2]).get_names(res_type, res_names);
 		}
 		else
 		{

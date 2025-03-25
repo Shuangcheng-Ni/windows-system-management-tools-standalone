@@ -55,12 +55,11 @@ namespace stdext {
 template <class... Ts>
 inline void wprint(const ::std::wformat_string<Ts...> fmt, Ts &&...args)
 {
-	auto cp{ GetConsoleOutputCP() };
 	auto wstr{ ::std::format(fmt, ::std::forward<decltype(args)>(args)...) };
-	auto len{ WideCharToMultiByte(cp, 0, wstr.data(), static_cast<int>(wstr.length()), nullptr, 0, nullptr, nullptr) };
+	auto len{ WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.length()), nullptr, 0, nullptr, nullptr) };
 
 	::std::string str(len, '\0');
-	WideCharToMultiByte(cp, 0, wstr.data(), static_cast<int>(wstr.length()), str.data(), len, nullptr, nullptr);
+	WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.length()), str.data(), len, nullptr, nullptr);
 	::std::print("{}", str);
 }
 
@@ -77,91 +76,42 @@ inline void throw_last_error(std::string_view msg)
 	throw std::runtime_error(std::format("{}: {:#010x}", msg, GetLastError()));
 }
 
-template <class T, auto CleanUp, auto InvalidValue = T{}, bool UseCApi = true>
-	requires(std::is_trivially_copy_constructible_v<T> && std::is_trivially_copy_assignable_v<T>) &&
-			((std::invocable<decltype(CleanUp), T> && (UseCApi || noexcept(CleanUp(std::declval<T>())))) ||
-			 (std::invocable<decltype(CleanUp), T *> && (UseCApi || noexcept(CleanUp(std::declval<T *>())))))
-class Guard {
+template <class Ptr, auto CleanUp, auto InvalidPtr = Ptr{ nullptr }>
+	requires std::is_pointer_v<Ptr> && std::invocable<decltype(CleanUp), Ptr>
+class Guard : public std::unique_ptr<std::remove_pointer_t<Ptr>, void (*)(Ptr) noexcept> {
 protected:
-	inline static const T invalid_value = [] {
-		if constexpr (std::convertible_to<decltype(InvalidValue), T>)
-		{
-			return static_cast<T>(InvalidValue);
-		}
-		else
-		{
-			return reinterpret_cast<T>(InvalidValue);
-		}
-	}();
+	using SmartPtr = std::unique_ptr<std::remove_pointer_t<Ptr>, void (*)(Ptr) noexcept>;
 
-	T value{ invalid_value };
+	inline static const auto invalid_ptr{ reinterpret_cast<Ptr>(InvalidPtr) };
+
+	static void clean_up(Ptr ptr) noexcept
+	{
+		if (ptr != invalid_ptr)
+		{
+			CleanUp(ptr);
+		}
+	}
+
+	SmartPtr &get_smart_ptr() noexcept { return *this; }
 
 public:
-	Guard() noexcept = default;
-	Guard(Guard &&other) noexcept
-		: value{ std::exchange(other.value, invalid_value) } {}
-	explicit Guard(T &&v) noexcept
-		: value{ v } {}
+	Guard() noexcept
+		: SmartPtr(invalid_ptr, clean_up) {}
+	explicit Guard(Ptr ptr) noexcept
+		: SmartPtr(ptr, clean_up) {}
 
-	~Guard()
-	{
-		if (!valid())
-		{
-			return;
-		}
-		if constexpr (std::invocable<decltype(CleanUp), T>)
-		{
-			CleanUp(value);
-		}
-		else
-		{
-			CleanUp(&value);
-		}
-	}
-
-	Guard &operator=(Guard &&other) noexcept
-	{
-		if (this != std::addressof(other))
-		{
-			this->~Guard();
-			new (this) Guard(std::move(other));
-		}
-		return *this;
-	}
-	Guard &operator=(T &&v) noexcept
+	Guard &operator=(Ptr ptr) noexcept
 	{
 		this->~Guard();
-		new (this) Guard(std::move(v));
+		new (this) Guard(ptr);
 		return *this;
 	}
 
-	operator T() const noexcept { return value; }
+	operator Ptr() const noexcept { return SmartPtr::get(); }
 
-	T *operator&() noexcept { return &value; }
+	auto operator&() noexcept { return std::inout_ptr(*this); }
 
-	auto operator->() noexcept
-	{
-		if constexpr (std::is_pointer_v<T>)
-		{
-			return value;
-		}
-		else
-		{
-			return &value;
-		}
-	}
-
-	bool valid() const noexcept
-	{
-		if constexpr (std::equality_comparable<T>)
-		{
-			return value != invalid_value;
-		}
-		else
-		{
-			return std::memcmp(&value, &invalid_value, sizeof(T)) != 0;
-		}
-	}
+	bool valid() const noexcept { return SmartPtr::get() != invalid_ptr; }
 };
 
 using Handle			 = Guard<HANDLE, CloseHandle, -1Z>; // -1Z: INVALID_HANDLE_VALUE
@@ -198,7 +148,7 @@ public:
 	HKey(std::tstring_view path, DWORD options, REGSAM sam_desired)
 	{
 		auto [key_root, sub_key] = reg_split(path);
-		if (auto ec{ RegOpenKeyEx(key_root, sub_key, options, sam_desired, &value) };
+		if (auto ec{ RegOpenKeyEx(key_root, sub_key, options, sam_desired, &*this) };
 			ec != ERROR_SUCCESS)
 		{
 			SetLastError(ec);
@@ -211,12 +161,12 @@ public:
 		auto [key_root, sub_key] = reg_split(path);
 		LSTATUS ec;
 		bool	exists{ true };
-		ec = RegOpenKeyEx(key_root, sub_key, open_options, sam_desired, &value);
+		ec = RegOpenKeyEx(key_root, sub_key, open_options, sam_desired, &*this);
 		if (ec == ERROR_FILE_NOT_FOUND)
 		{
 			std::println(stderr, "[INFO] Registry key not found. Trying to create one.");
 			ec	   = RegCreateKeyEx(key_root, sub_key, 0, nullptr, create_options,
-									sam_desired, nullptr, &value, nullptr);
+									sam_desired, nullptr, &*this, nullptr);
 			exists = false;
 		}
 		if (ec != ERROR_SUCCESS)

@@ -176,7 +176,7 @@ function sudo {
 
 		$Receiver = {
 			$PipeClient = [System.IO.Pipes.NamedPipeClientStream]::new('.', $SudoId, [System.IO.Pipes.PipeDirection]::In)
-			$PipeClient.Connect()
+			$PipeClient.Connect([timespan]::FromSeconds(10))
 			while ($PipeClient.IsConnected) {
 				$Byte = $PipeClient.ReadByte()
 				if ($Byte -ne -1) {

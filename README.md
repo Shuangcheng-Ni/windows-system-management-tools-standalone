@@ -4,6 +4,7 @@
 
 - This repository contains some Windows system management tools.
   - [ec.cpp](#eccpp)
+  - [hook.cpp](#hookcpp)
   - [privilege.cpp](#privilegecpp)
   - [resource.cpp](#resourcecpp)
   - [statpp.cpp](#statppcpp)
@@ -15,7 +16,7 @@
 - These tools may only work on Windows except `sqlite3.js`. `Microsoft.PowerShell_profile.ps1` and `WinRAR-keygen.py` may also run on other platforms, but that makes no sense.
 - All the commands specified in this document are PowerShell commands. For the C++ tools, you need to open a Developer Powershell for VS 2022 to set up the environment for compilation. The executable files of the C++ tools should be placed in a directory in `$env:Path`.
 - The C++ tools are written in C++26, and rely on Windows SDK/WDK. It is recommended to use the latest version of MSVC to compile them. You might also use Clang with MSVC toolchain. GCC (MinGW) is not recommended for the following reasons:
-  - `Formatting Ranges` is still not supported by GCC 15. You have to implement it yourself.
+  - `Formatting Ranges` is not supported until GCC 15. You might have to implement it yourself.
   - `std::filesystem::file_time_type` is implementation-defined. GCC uses the POSIX file time type, whose resolution is 1ns and epoch is `2174-01-01 00:00:00.000000000 UTC`. You have to implement a custom file time type, whose resolution is 100ns and epoch is `1601-01-01 00:00:00.0000000 UTC`.
   - GCC requires extra `typename` disambiguators for dependent names in templates. For example, the `FileTime<IsConst>::TimePoint(file_time)` at line 129 of `statpp.cpp` and line 130 of `statreg.cpp` should be `(typename FileTime<IsConst>::TimePoint)(file_time)`.
   - The WDK in MinGW GCC has some compatibility issues. For example, `<GCC root>\x86_64-w64-mingw32\include\ddk\wdm.h` has two extraneous function definitions (`InterlockedBitTestAndSet` and `InterlockedBitTestAndReset`), which would cause compilation errors (`redeclared inline without 'gnu_inline' attribute`). You have to remove them manually.
@@ -64,6 +65,54 @@ NTSTATUS: "0xp 指令引用了 0xp 内存。该内存不能为 s。\r\n"
   |cl (MSVC)|19.43|`/EHsc /std:c++latest`|
   |g++ (MinGW)|14|`-std=c++26 -lstdc++exp`|
   |clang++ (MSVC)|17 (with MSVC toolchain)|`-std=c++26 --target=x86_64-pc-windows-msvc`|
+
+## hook.cpp
+
+### Description
+
+- This tool injects/unloads a DLL into/from a process.
+- In my implementation, the main method is to use `CreateRemoteThread` to create a remote thread in the target process, and call `LoadLibrary`/`FreeLibrary` to inject/unload the DLL.
+- I have also provided two example implementations of the DLL to be injected. Both implementations include a `DllMain` function, where the hooks are set up at `DLL_PROCESS_ATTACH` and removed at `DLL_PROCESS_DETACH`.
+  - `hook-IAT.cpp`: Hook the IAT and Delay IAT of the target process. `GetProcAddress` should also be hooked to prevent the original function from being called. If the executable of the target process was compiled with optimization, this method may not work. This is the recommended method as it guarantees concurrency.
+  - `hook-instruction.cpp`: Modify the instructions of the specific functions in the target process. Typically, a `jmp` instruction is used to redirect the execution flow to your customized functions. This method may not work if the functions are called concurrently. For example, if the original function is called in your customized function, you have to unhook the function first. The subsequent calls to the function will execute the original function before the original function returns and the hook is restored.
+
+### Usage
+
+```
+Usage:
+(1) hook <dll> attach <pid>
+(2) hook <dll> detach <pid>
+(3) hook <dll> exec <command> [<args>...]
+```
+
+- `<dll>`: The path to a DLL file. It is recommended to use absolute paths. Relative paths might not be resolved as expected. See the [Microsoft Documentation](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order) to understand the DLL search order.
+- `<pid>`: The process ID of the target process to inject/unload the DLL into/from.
+- `<command> [<args>...]`: A new process will be created to run the specified command. The DLL will also be injected into the new process.
+
+### Examples
+
+```
+PS > hook C:\a.dll attach 12345 # inject C:\a.dll into process 12345
+
+PS > hook C:\a.dll detach 12345 # unload C:\a.dll from process 12345
+
+PS > hook C:\a.dll exec D:\b.exe arg1 arg2 # create a new process (command: D:\b.exe arg1 arg2) and inject C:\a.dll into the new process
+```
+
+### Build
+
+- For x64 targets (under `Developer PowerShell for VS 2022`):
+  ```
+  cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE hook-helper.cpp /LD /Fo:hook-helper-x64 /Fe:hook-x64
+  cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE hook.cpp hook-x64.lib /Fo:hook-x64 /Fe:hook-x64
+  cl /O2 /EHsc /std:c++latest /W4 /sdl /Zc:preprocessor /DUNICODE hook-IAT.cpp user32.lib shell32.lib shlwapi.lib delayimp.lib /LD /link /delayload:shell32.dll
+  ```
+- For x86 targets (under `Developer PowerShell for VS 2022 (x86)`):
+  ```
+  cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE hook-helper.cpp /LD /Fo:hook-helper-x86 /Fe:hook-x86
+  cl /O2 /EHsc /std:c++latest /W4 /sdl /DUNICODE hook.cpp hook-x86.lib /Fo:hook-x86 /Fe:hook-x86
+  cl /O2 /EHsc /std:c++latest /W4 /sdl /Zc:preprocessor /DUNICODE hook-IAT.cpp user32.lib shell32.lib shlwapi.lib delayimp.lib /LD /link /delayload:shell32.dll
+  ```
 
 ## privilege.cpp
 
@@ -164,7 +213,7 @@ Usage:
   |Compiler|Minimum Version|Required Options|
   |-|-|-|
   |cl (MSVC)|19.43|`/EHsc /std:c++latest (/link) advapi32.lib`|
-  |g++ (MinGW)|14 (`Formatting Ranges` not supported)|`-std=c++26 -lstdc++exp`|
+  |g++ (MinGW)|15|`-std=c++26 -lstdc++exp`|
   |clang++ (MSVC)|17 (with MSVC toolchain)|`-std=c++26 -ladvapi32 --target=x86_64-pc-windows-msvc`|
 
 ## resource.cpp
@@ -235,7 +284,7 @@ PS > resource load test.exe test.exe.manifest MANIFEST '#1' # load the resources
   |Compiler|Minimum Version|Required Options|
   |-|-|-|
   |cl (MSVC)|19.42|`/EHsc /std:c++latest`|
-  |g++ (MinGW)|14 (`Formatting Ranges` not supported)|`-std=c++26 -lstdc++exp`|
+  |g++ (MinGW)|15|`-std=c++26 -lstdc++exp`|
   |clang++ (MSVC)|17 (with MSVC toolchain)|`-std=c++26 --target=x86_64-pc-windows-msvc`|
 
 ## statpp.cpp
@@ -303,7 +352,7 @@ ctime : 2025-05-05 18:08:09.0123456 -0500 (GMT-5)
   |Compiler|Minimum Version|Required Options|
   |-|-|-|
   |cl (MSVC)|19.42|`/EHsc /std:c++latest /I "${env:WindowsSDKDir}Include\${env:WindowsSDKVersion}km" (/link) ntdll.lib`|
-  |g++ (MinGW)|14 (`Formatting Ranges` not supported)|`-std=c++26 -isystem '<GCC root>\x86_64-w64-mingw32\include\ddk' -lstdc++exp -lntdll`|
+  |g++ (MinGW)|15|`-std=c++26 -isystem '<GCC root>\x86_64-w64-mingw32\include\ddk' -lstdc++exp -lntdll`|
   |clang++ (MSVC)|17 (with MSVC toolchain)|`-std=c++26 -isystem "${env:WindowsSDKDir}Include\${env:WindowsSDKVersion}km" -lntdll --target=x86_64-pc-windows-msvc`|
 
 ## statreg.cpp
